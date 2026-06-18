@@ -5,12 +5,14 @@
 //   • Live countdown to next session reset
 // State comes from chrome.storage.local (written by background.js on every
 // message_limit event). Clicking the extension icon toggles visibility.
+// If session usage jumps >10% in a single message, the session bar pulses red.
 
 (function () {
   "use strict";
 
   const BAR_ID = "cut-overlay-bar";
   const STORAGE_KEY = "usageState";
+  const SPIKE_THRESHOLD = 0.10; // 10 percentage points
 
   // ── Styles ────────────────────────────────────────────────────────────────
 
@@ -59,16 +61,29 @@
       height: 100%;
       border-radius: 2px;
       width: 0%;
-      transition: width 0.6s ease;
+      transition: width 0.6s ease, background 0.3s ease;
     }
     #${BAR_ID} .cut-fill-session { background: #D97757; }
     #${BAR_ID} .cut-fill-weekly  { background: #6B9CE8; }
+
+    /* Warning state: bar turns red and pulses, pct turns red, icon appears */
+    #${BAR_ID} .cut-fill-session.cut-spike { background: #FF3B30; animation: cut-pulse 0.7s ease-in-out 4; }
+    #${BAR_ID} .cut-pct.cut-spike          { color: #FF3B30 !important; }
+    #${BAR_ID} .cut-spike-icon             { display: none; color: #FF3B30; font-size: 13px; flex-shrink: 0; }
+    #${BAR_ID} .cut-spike-icon.cut-spike   { display: inline; }
+
+    @keyframes cut-pulse {
+      0%, 100% { opacity: 1; }
+      50%       { opacity: 0.35; }
+    }
+
     #${BAR_ID} .cut-pct {
       font-variant-numeric: tabular-nums;
       min-width: 30px;
       text-align: right;
       color: rgba(255, 255, 255, 0.8);
       flex-shrink: 0;
+      transition: color 0.3s ease;
     }
     #${BAR_ID} .cut-sep {
       width: 1px;
@@ -104,6 +119,7 @@
       <div class="cut-fill cut-fill-session" id="cut-s-fill"></div>
     </div>
     <span class="cut-pct" id="cut-s-pct">—</span>
+    <span class="cut-spike-icon" id="cut-spike-icon">⚠</span>
 
     <div class="cut-sep"></div>
 
@@ -130,6 +146,33 @@
     mount();
   }
 
+  // ── Warning (spike detection) ─────────────────────────────────────────────
+
+  let warningTimer = null;
+
+  function triggerSpike() {
+    const sFill = document.getElementById("cut-s-fill");
+    const sPct = document.getElementById("cut-s-pct");
+    const icon = document.getElementById("cut-spike-icon");
+    if (!sFill) return;
+
+    // Force animation restart by removing and re-adding the class
+    sFill.classList.remove("cut-spike");
+    sPct.classList.remove("cut-spike");
+    icon.classList.remove("cut-spike");
+    void sFill.offsetWidth; // reflow to restart animation
+    sFill.classList.add("cut-spike");
+    sPct.classList.add("cut-spike");
+    icon.classList.add("cut-spike");
+
+    clearTimeout(warningTimer);
+    warningTimer = setTimeout(() => {
+      sFill.classList.remove("cut-spike");
+      sPct.classList.remove("cut-spike");
+      icon.classList.remove("cut-spike");
+    }, 6000);
+  }
+
   // ── Render ────────────────────────────────────────────────────────────────
 
   let currentState = null;
@@ -152,7 +195,7 @@
   function render() {
     const state = currentState;
     const sFill = document.getElementById("cut-s-fill");
-    if (!sFill) return; // bar not yet mounted
+    if (!sFill) return;
 
     const sPct = document.getElementById("cut-s-pct");
     const wFill = document.getElementById("cut-w-fill");
@@ -176,8 +219,24 @@
   }
 
   function applyState(state) {
-    currentState = state;
-    render();
+    // Spike detection: session utilization jumped >10pp since last update
+    const prevUtil = currentState && currentState.session
+      ? (currentState.session.utilization || 0)
+      : null;
+    const newUtil = state && state.session
+      ? (state.session.utilization || 0)
+      : null;
+
+    if (prevUtil !== null && newUtil !== null && (newUtil - prevUtil) >= SPIKE_THRESHOLD) {
+      // Render new state first so the bar position is updated, then warn
+      currentState = state;
+      render();
+      triggerSpike();
+    } else {
+      currentState = state;
+      render();
+    }
+
     if (!tickHandle) {
       tickHandle = setInterval(render, 1000);
     }
