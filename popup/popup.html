@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Claude Usage Tracker</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header>
+      <h1>Claude Usage Tracker</h1>
+    </header>
+
+    <section class="countdown-card">
+      <div class="countdown" id="countdown">--:--:--</div>
+      <div class="countdown-label" id="countdownLabel">until your usage limit resets</div>
+      <div class="reset-source" id="resetSource"></div>
+    </section>
+
+    <section class="stats">
+      <div class="stat">
+        <span class="stat-value" id="inputTokens">0</span>
+        <span class="stat-name">input tokens</span>
+      </div>
+      <div class="stat">
+        <span class="stat-value" id="outputTokens">0</span>
+        <span class="stat-name">output tokens</span>
+      </div>
+      <div class="stat">
+        <span class="stat-value" id="totalTokens">0</span>
+        <span class="stat-name">total tokens</span>
+      </div>
+      <div class="stat">
+        <span class="stat-value" id="messageCount">0</span>
+        <span class="stat-name">messages</span>
+      </div>
+    </section>
+
+    <section class="manual-override">
+      <button id="toggleManual" class="link-button">Set reset time manually</button>
+      <div id="manualForm" class="manual-form hidden">
+        <input type="time" id="manualTime" />
+        <button id="saveManual">Save</button>
+      </div>
+    </section>
+
+    <footer>
+      <button id="resetSession" class="link-button danger">Reset session data</button>
+    </footer>
+
+    <script src="popup.js"></script>
+  </body>
+</html>
