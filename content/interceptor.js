@@ -14,6 +14,9 @@
   const COMPLETION_URL_RE = /\/api\/.*chat_conversations.*(completion|retry_completion)/i;
 
   function parseLimitEvents(text) {
+    // Normalize CRLF/CR line endings — HTTP servers send \r\n, and without
+    // this the block split on /\n\n+/ fails because \r\n\r\n doesn't match.
+    text = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
     const limits = [];
     for (const block of text.split(/\n\n+/)) {
       let isLimitEvent = false;
