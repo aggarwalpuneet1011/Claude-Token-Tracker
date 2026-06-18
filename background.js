@@ -132,3 +132,9 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
 
 chrome.runtime.onInstalled.addListener(async () => updateBadge(await getState()));
 chrome.runtime.onStartup.addListener(async () => updateBadge(await getState()));
+
+// Clicking the toolbar icon toggles the overlay bar on the active claude.ai tab.
+chrome.action.onClicked.addListener(async (tab) => {
+  if (!tab.url || !tab.url.startsWith("https://claude.ai/")) return;
+  chrome.tabs.sendMessage(tab.id, { type: "TOGGLE_OVERLAY" });
+});

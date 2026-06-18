@@ -43,21 +43,42 @@
     const response = await originalFetch.apply(this, args);
     try {
       const input = args[0];
-      const url = typeof input === "string" ? input : input && input.url ? input.url : "";
-      if (COMPLETION_URL_RE.test(url)) {
-        response
-          .clone()
-          .text()
-          .then((text) => {
-            const limits = parseLimitEvents(text);
-            if (limits.length) {
-              window.postMessage(
-                { source: SOURCE, type: "message_limit", payload: limits[limits.length - 1], url },
-                "*"
-              );
-            }
-          })
-          .catch(() => {});
+      const url = typeof input === "string" ? input
+        : input instanceof URL ? input.href
+        : input && typeof input.url === "string" ? input.url
+        : "";
+      if (COMPLETION_URL_RE.test(url) && response.body) {
+        // Do NOT use response.clone().text() — claude.ai calls AbortController.abort()
+        // as cleanup after reading, which kills the clone's body read. Instead pipe the
+        // body through a TransformStream so we buffer chunks as they pass to claude.ai,
+        // then parse in flush() which fires on natural stream close (before the abort).
+        const chunks = [];
+        const decoder = new TextDecoder();
+        const transform = new TransformStream({
+          transform(chunk, controller) {
+            chunks.push(chunk);
+            controller.enqueue(chunk);
+          },
+          flush() {
+            try {
+              let text = "";
+              for (const chunk of chunks) text += decoder.decode(chunk, { stream: true });
+              text += decoder.decode();
+              const limits = parseLimitEvents(text);
+              if (limits.length) {
+                window.postMessage(
+                  { source: SOURCE, type: "message_limit", payload: limits[limits.length - 1], url },
+                  "*"
+                );
+              }
+            } catch (_) {}
+          },
+        });
+        return new Response(response.body.pipeThrough(transform), {
+          status: response.status,
+          statusText: response.statusText,
+          headers: response.headers,
+        });
       }
     } catch (_) {
       // never let our instrumentation break the page's own request
