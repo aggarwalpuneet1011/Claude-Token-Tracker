@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Claude Usage Tracker",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Shows a live usage bar at the top of claude.ai — session %, weekly %, and countdown to reset.",
   "permissions": ["storage", "alarms", "tabs"],
   "host_permissions": ["https://claude.ai/*"],

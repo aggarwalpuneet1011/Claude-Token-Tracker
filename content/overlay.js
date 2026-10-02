@@ -3,8 +3,10 @@
 //   • 5h session utilization progress bar
 //   • 7d weekly utilization progress bar
 //   • Live countdown to next session reset
-// State comes from chrome.storage.local (written by background.js on every
-// message_limit event). Clicking the extension icon toggles visibility.
+// State comes from chrome.storage.local (written by background.js). This script
+// also polls Claude.ai's own usage endpoint so the bar stays correct for usage
+// from any surface, and blanks a reading whose window has already reset.
+// Clicking the extension icon toggles visibility.
 // If session usage jumps >10% in a single message, the session bar pulses red.
 
 (function () {
@@ -13,6 +15,8 @@
   const BAR_ID = "cut-overlay-bar";
   const STORAGE_KEY = "usageState";
   const SPIKE_THRESHOLD = 0.10; // 10 percentage points
+  const POLL_MS = 60 * 1000; // how often to refresh from the usage endpoint
+  const FRESH_MS = 45 * 1000; // skip a poll if another tab refreshed this recently
 
   // ── Styles ────────────────────────────────────────────────────────────────
 
@@ -202,8 +206,10 @@
     const wPct = document.getElementById("cut-w-pct");
     const cd = document.getElementById("cut-cd");
 
-    const session = state && state.session;
-    const weekly = state && state.weekly;
+    // A reading whose reset time has passed belongs to a finished window.
+    // Show "—" instead of repainting it until fresh data arrives.
+    const session = liveWindow(state && state.session);
+    const weekly = liveWindow(state && state.weekly);
 
     const sUtil = session ? (session.utilization || 0) : 0;
     const wUtil = weekly ? (weekly.utilization || 0) : 0;
@@ -218,14 +224,19 @@
     cd.textContent = resetAt ? formatCountdown(resetAt - Date.now()) : "--:--:--";
   }
 
+  function liveWindow(win) {
+    if (!win) return null;
+    if (win.resetAt && win.resetAt <= Date.now()) return null;
+    return win;
+  }
+
   function applyState(state) {
-    // Spike detection: session utilization jumped >10pp since last update
-    const prevUtil = currentState && currentState.session
-      ? (currentState.session.utilization || 0)
-      : null;
-    const newUtil = state && state.session
-      ? (state.session.utilization || 0)
-      : null;
+    // Spike detection: session utilization jumped >10pp since last update.
+    // An expired previous reading is not a valid baseline.
+    const prevSession = liveWindow(currentState && currentState.session);
+    const nextSession = liveWindow(state && state.session);
+    const prevUtil = prevSession ? (prevSession.utilization || 0) : null;
+    const newUtil = nextSession ? (nextSession.utilization || 0) : null;
 
     if (prevUtil !== null && newUtil !== null && (newUtil - prevUtil) >= SPIKE_THRESHOLD) {
       // Render new state first so the bar position is updated, then warn
@@ -252,6 +263,119 @@
     if (area === "local" && changes[STORAGE_KEY]) {
       applyState(changes[STORAGE_KEY].newValue);
     }
+  });
+
+  // ── Live usage polling ────────────────────────────────────────────────────
+  // /api/organizations/{org}/usage is what claude.ai's own Settings > Usage
+  // page reads. It returns percentages on a 0..100 scale and ISO reset times.
+
+  let orgId = null;
+  let pollInFlight = false;
+  let pollHandle = null;
+
+  function extensionAlive() {
+    try {
+      return !!(chrome.runtime && chrome.runtime.id);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function cookieOrgId() {
+    const m = document.cookie.match(/(?:^|;\s*)lastActiveOrg=([^;]+)/);
+    return m ? decodeURIComponent(m[1]) : null;
+  }
+
+  async function fetchUsageFor(id) {
+    if (!id) return null;
+    const res = await fetch(`/api/organizations/${encodeURIComponent(id)}/usage`, {
+      credentials: "include",
+    });
+    if (!res.ok) return null;
+    const body = await res.json();
+    return body && typeof body === "object" && "five_hour" in body ? body : null;
+  }
+
+  async function fetchUsage() {
+    const tried = new Set();
+    for (const id of [orgId, cookieOrgId()]) {
+      if (!id || tried.has(id)) continue;
+      tried.add(id);
+      const body = await fetchUsageFor(id);
+      if (body) {
+        orgId = id;
+        return body;
+      }
+    }
+    // Fall back to the org list and take the first org that exposes usage.
+    const res = await fetch("/api/organizations", { credentials: "include" });
+    if (!res.ok) return null;
+    const orgs = await res.json();
+    for (const org of Array.isArray(orgs) ? orgs : []) {
+      if (!org || !org.uuid || tried.has(org.uuid)) continue;
+      tried.add(org.uuid);
+      const body = await fetchUsageFor(org.uuid);
+      if (body) {
+        orgId = org.uuid;
+        return body;
+      }
+    }
+    return null;
+  }
+
+  function normalizeWindow(win) {
+    // A null window means nothing has been used in it yet.
+    if (!win || typeof win.utilization !== "number") return { utilization: 0, resetAt: null };
+    const t = win.resets_at ? new Date(win.resets_at).getTime() : NaN;
+    return { utilization: win.utilization / 100, resetAt: isNaN(t) ? null : t };
+  }
+
+  async function pollUsage(force) {
+    if (!extensionAlive()) {
+      clearInterval(pollHandle);
+      return;
+    }
+    if (pollInFlight) return;
+    if (!force) {
+      if (document.hidden) return;
+      const fresh =
+        currentState &&
+        currentState.source === "usage_api" &&
+        currentState.updatedAt &&
+        Date.now() - currentState.updatedAt < FRESH_MS;
+      if (fresh) return;
+    }
+    pollInFlight = true;
+    try {
+      const body = await fetchUsage();
+      if (!body) return;
+      chrome.runtime.sendMessage({
+        type: "USAGE_SNAPSHOT",
+        payload: {
+          session: normalizeWindow(body.five_hour),
+          weekly: normalizeWindow(body.seven_day),
+        },
+      });
+    } catch (_) {
+      // signed out, offline, or endpoint changed: keep whatever we have
+    } finally {
+      pollInFlight = false;
+    }
+  }
+
+  pollUsage(true);
+  pollHandle = setInterval(() => pollUsage(false), POLL_MS);
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) pollUsage(false);
+  });
+
+  // A completion just finished in this tab (relayed by interceptor.js):
+  // refresh right away so the bar and spike warning react without waiting.
+  window.addEventListener("message", (event) => {
+    if (event.source !== window) return;
+    const data = event.data;
+    if (!data || data.source !== "claude-usage-tracker" || data.type !== "message_limit") return;
+    setTimeout(() => pollUsage(true), 1500);
   });
 
   // ── Toggle (extension icon click → background sends TOGGLE_OVERLAY) ───────
